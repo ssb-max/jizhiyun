@@ -61,23 +61,24 @@ u16 USART1_RX_STA;   						//??????????
 u8 USART2_RX_BUF[USART2_MAX_RECV_LEN]; 				//???????,???USART2_MAX_RECV_LEN?????.
 u8 USART2_TX_BUF[USART2_MAX_SEND_LEN]; 			  //???????,???USART2_MAX_SEND_LEN???
 u16 USART2_RX_STA;   						//??????????
-/* USART2 = WiFi (Gizwits). Bridge each received byte through the HAL
- * compatibility layer to gizwits_product.c's HAL_UART_RxCpltCallback. */
-void USART2_IRQHandler(void)
+/* USART1 = Wi-Fi (Gizwits), physically PA9/PA10.
+ * HAL adapter transparently maps huart2 -> physical USART1, so we
+ * call HAL_UART_IRQHandler with &huart2 here. The Gizwits callback
+ * check "Instance == USART2" still passes because huart2.Instance
+ * is kept as USART2 for that purpose only. */
+void USART1_IRQHandler(void)
 {
     HAL_UART_IRQHandler(&huart2);
 }
 
-/* Safe stub for USART1 RX IRQ. usart1_Init() enables USART1 RXNE +
- * NVIC USART1_IRQn, but in this project USART1 is repurposed for
- * printf only (TX). If we leave no handler, any spurious RX will
- * fall into the default infinite-loop weak handler. So just drain
- * the byte to keep things safe. */
-void USART1_IRQHandler(void)
+/* USART2 = printf debug (PA2/PA3), RX not used in this project.
+ * usart2_Init() enables RXNE interrupt; drain any received byte to
+ * prevent the peripheral from stalling. */
+void USART2_IRQHandler(void)
 {
-    if (USART_GetITStatus(USART1, USART_IT_RXNE) != RESET)
+    if (USART_GetITStatus(USART2, USART_IT_RXNE) != RESET)
     {
-        (void)USART_ReceiveData(USART1);
+        (void)USART_ReceiveData(USART2);
     }
 }
 

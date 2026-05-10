@@ -12,13 +12,17 @@
  *   后续若官方再次更新 Gizwits/Utils，可以直接覆盖那两个文件夹，
  *   无需任何修改即可继续使用本兼容层。
  *
- * 硬件资源映射（重要！）：
- *   huart1.Instance = USART1   -> 串口1 (PA9 TX / PA10 RX) ：用于 printf 调试
- *   huart2.Instance = USART2   -> 串口2 (PA2 TX / PA3  RX) ：连接 Wi-Fi 模块（机智云）
- *   htim2.Instance  = TIM3     -> 1ms 系统节拍（已存在的 TIM3）
+ * 硬件资源映射（无需改动硬件接线）：
  *
- *   注意：Gizwits 的 HAL_UART_RxCpltCallback 中硬编码判断
- *         "UartHandle->Instance == USART2"，因此 Wi-Fi 模块必须接到 USART2。
+ *   逻辑名   Instance(保留)  物理串口  引脚          用途
+ *   huart2    USART2         USART1   PA9/PA10     Wi-Fi 模块（机智云协议）9600
+ *   huart1    USART1         USART2   PA2/PA3      printf 调试            115200
+ *   htim2     TIM3           TIM3     —            1ms 系统节拍
+ *
+ *   关键约束：gizwits_product.c 中硬编码了
+ *     "if (UartHandle->Instance == USART2)"
+ *   因此 huart2.Instance 必须保持 USART2，但通过 get_phys() 函数把实际
+ *   I/O 透明重定向到物理 USART1（PA9/PA10），无需改动硬件接线。
  ***********************************************************/
 
 #ifndef __HAL_STM32F10X_H__

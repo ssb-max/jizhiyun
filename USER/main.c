@@ -14,19 +14,23 @@
 #include "hal_stm32f10x.h"   /* HAL adapter (bridges Gizwits HAL code to StdPeriph) */
 
 /* ============================================================
- *  Hardware resource convention (must match the wiring!)
+ *  Hardware resource convention -- NO REWIRING NEEDED
  *
- *  USART1 (PA9 TX / PA10 RX) -> printf debug   (115200 baud)
- *  USART2 (PA2 TX / PA3  RX) -> Wi-Fi module   (9600 baud, Gizwits)
+ *  Physical wiring (unchanged from original):
+ *    USART1 (PA9 TX / PA10 RX) -> Wi-Fi module  (9600 baud, Gizwits)
+ *    USART2 (PA2 TX / PA3  RX) -> printf debug  (115200 baud)
  *
- *  NOTE: gizwits_product.c hard-codes
- *        "if (UartHandle->Instance == USART2)" inside
- *        HAL_UART_RxCpltCallback, so Wi-Fi MUST be on USART2.
+ *  Logical mapping in HAL adapter (hal_stm32f10x.c):
+ *    huart2.Instance = USART2  (kept for Gizwits' "==USART2" check)
+ *    huart2 physical I/O       -> USART1 via get_phys()
+ *    huart1.Instance = USART1
+ *    huart1 physical I/O       -> USART2 via get_phys()
  *
- *  TIM3 = 1ms system tick (logical name htim2 in Gizwits code).
- *  TIM3_IRQHandler -> HAL_TIM_IRQHandler(&htim2)
- *                  -> HAL_TIM_PeriodElapsedCallback (in gizwits_product.c)
- *                  -> keyHandle() + gizTimerMs()
+ *  ISR routing:
+ *    USART1_IRQHandler -> HAL_UART_IRQHandler(&huart2)  [Wi-Fi]
+ *    USART2_IRQHandler -> drain only                    [debug]
+ *    TIM3_IRQHandler   -> HAL_TIM_IRQHandler(&htim2)
+ *                      -> HAL_TIM_PeriodElapsedCallback -> gizTimerMs()
  * ============================================================ */
 
 
@@ -73,8 +77,9 @@ void Gizwits_Init(void)
     /* TIM3: 1ms tick. arr=9 psc=7199 -> (9+1)*(7199+1)/72MHz = 1ms */
     TIM3_Int_Init(9, 7199);
 
-    /* USART2 = Wi-Fi (Gizwits), 9600 baud */
-    usart2_Init(9600);
+    /* USART1 (PA9/PA10) = Wi-Fi module, 9600 baud.
+     * HAL adapter transparently routes huart2 -> physical USART1. */
+    usart1_Init(9600);
 
     /* Reset user data points before protocol init */
     memset((uint8_t *)&currentDataPoint, 0, sizeof(dataPoint_t));
@@ -96,9 +101,9 @@ int main(void)
 
     OLED_Init();
 
-    /* USART1 = printf debug (115200). Gizwits' built-in fputc routes
-     * printf to huart1 (Instance=USART1) via HAL_UART_Transmit. */
-    usart1_Init(115200);
+    /* USART2 (PA2/PA3) = printf debug, 115200 baud.
+     * HAL adapter transparently routes huart1 -> physical USART2. */
+    usart2_Init(115200);
 
     Relay_Init();
     Key_Init();

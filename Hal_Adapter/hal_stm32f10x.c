@@ -67,8 +67,12 @@ static USART_TypeDef *get_phys(UART_HandleTypeDef *huart)
 }
 
 /* ============================================================
- *  HAL_UART_Transmit —— 阻塞发送
- *  Gizwits 的 fputc (printf 重定向) 调用此函数
+ *  HAL_UART_Transmit —— 阻塞发送（含超时保护）
+ *
+ *  超时上限：约 3ms（72MHz × 216000 次空循环）。
+ *  9600 baud 下一个字节需要 ~1.04ms，3ms 裕量充足。
+ *  万一硬件故障导致 TXE/TC 一直不置位，本函数会超时返回
+ *  而不是永久卡死，从而让主循环和 Gizwits 有机会恢复。
  * ============================================================ */
 HAL_StatusTypeDef HAL_UART_Transmit(UART_HandleTypeDef *huart,
                                     uint8_t *pData,
@@ -77,21 +81,33 @@ HAL_StatusTypeDef HAL_UART_Transmit(UART_HandleTypeDef *huart,
 {
     USART_TypeDef *port;
     uint16_t i;
+    uint32_t guard;
 
     if (!huart || !pData || !Size) return HAL_ERROR;
 
     port = get_phys(huart);
     huart->gState = HAL_UART_STATE_BUSY_TX;
 
-    for (i = 0; i < Size; i++)
+    for (i = 0U; i < Size; i++)
     {
+        guard = 0U;
         while (USART_GetFlagStatus(port, USART_FLAG_TXE) == RESET)
         {
-            (void)Timeout;
+            if (++guard > 216000U)          /* ~3 ms @ 72 MHz */
+            {
+                huart->gState = HAL_UART_STATE_READY;
+                return HAL_TIMEOUT;         /* 超时退出，不卡死 */
+            }
         }
         USART_SendData(port, (uint16_t)pData[i]);
     }
-    while (USART_GetFlagStatus(port, USART_FLAG_TC) == RESET) {}
+
+    /* 等待最后一个字节发送完成（TC = 移位寄存器也空了） */
+    guard = 0U;
+    while (USART_GetFlagStatus(port, USART_FLAG_TC) == RESET)
+    {
+        if (++guard > 216000U) break;       /* 超时跳过，不卡死 */
+    }
 
     huart->gState = HAL_UART_STATE_READY;
     return HAL_OK;
@@ -130,35 +146,47 @@ HAL_StatusTypeDef HAL_UART_Receive_IT(UART_HandleTypeDef *huart,
 /* ============================================================
  *  HAL_UART_IRQHandler —— 在物理串口的 ISR 中调用
  *
- *  注意：传入的 huart 是逻辑句柄（如 &huart2），
- *        内部通过 get_phys() 访问正确的物理寄存器。
+ *  设计原则（与原版 ST HAL 对齐，但针对 Size=1 场景简化）：
+ *
+ *  1. 不在 ISR 里关闭 RXNE 中断。
+ *     Cortex-M3 同优先级中断不会嵌套，根本没必要关；
+ *     关了反而产生一个"收不到数据"的窗口。
+ *
+ *  2. 不递增 pRxBuffPtr。
+ *     Gizwits 始终以 Size=1 调用 HAL_UART_Receive_IT，
+ *     目标缓冲区永远是 &aRxBuffer（单字节）。回调里
+ *     HAL_UART_Receive_IT 会将指针重置回 &aRxBuffer，
+ *     因此递增毫无意义，只会留下瞬间越界的隐患。
+ *
+ *  3. ORE（溢出错误）已隐式处理：
+ *     STM32F10x 中 ORE 发生时 RXNE 仍为 1（旧数据保留在
+ *     DR 中），读 DR 会同时清除 RXNE 和 ORE，流程不变。
  * ============================================================ */
 void HAL_UART_IRQHandler(UART_HandleTypeDef *huart)
 {
     USART_TypeDef *port;
+    uint8_t byte;
 
     if (!huart) return;
     port = get_phys(huart);
 
+    /* RXNE 置位（包含 ORE 同时置位的情况）时读取数据 */
     if (USART_GetITStatus(port, USART_IT_RXNE) != RESET)
     {
-        uint8_t byte = (uint8_t)USART_ReceiveData(port);
+        byte = (uint8_t)USART_ReceiveData(port); /* 读 DR 同时清 RXNE / ORE */
 
-        if (huart->pRxBuffPtr && huart->RxXferCount > 0U)
+        /* 写入当前接收槽位（不递增指针，始终覆写同一个 aRxBuffer） */
+        if (huart->pRxBuffPtr != NULL)
         {
             *(huart->pRxBuffPtr) = byte;
-            huart->pRxBuffPtr++;
-            huart->RxXferCount--;
-
-            if (huart->RxXferCount == 0U)
-            {
-                huart->RxState = HAL_UART_STATE_READY;
-                /* 关掉中断，等 Gizwits 回调里重新 Arm */
-                USART_ITConfig(port, USART_IT_RXNE, DISABLE);
-                /* 触发 Gizwits 的 HAL_UART_RxCpltCallback */
-                HAL_UART_RxCpltCallback(huart);
-            }
         }
+
+        huart->RxXferCount = 0U;
+        huart->RxState     = HAL_UART_STATE_READY;
+
+        /* 调用 Gizwits 回调；回调内 HAL_UART_Receive_IT 会重置
+         * pRxBuffPtr 并重新 ENABLE RXNE（RXNE 本来就开着，ENABLE 是幂等的）*/
+        HAL_UART_RxCpltCallback(huart);
     }
 }
 
